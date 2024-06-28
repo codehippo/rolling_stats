@@ -21,9 +21,10 @@
 //! You can use the library in your Rust code like this:
 //!
 //! ```rust
-//! use rolling_stats::{RollingStats, Endian};
+//! use rolling_stats::RollingStats;
+//! use endi::Endian;
 //!
-//! let mut stats = RollingStats::<3>::new(Endian::Little, 42);
+//! let mut stats = RollingStats::<3>::try_new(Endian::Little, 42).unwrap();
 //! stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
 //!
 //! println!("Mean: {}", stats.mean());
@@ -40,6 +41,7 @@ extern crate std;
 use arraydeque::{ArrayDeque, Wrapping};
 use arrayvec::ArrayVec;
 use core::mem;
+use const_format::formatcp;
 use endi::Endian;
 use rand::distributions::Distribution;
 use rand::SeedableRng;
@@ -47,6 +49,8 @@ use rand_chacha::ChaCha8Rng;
 use rand_distr::Normal;
 
 const I32_SIZE_BYTES: usize = mem::size_of::<i32>();
+const APPROX_DEFAULT_STACK_LIMIT_IN_BYTES: usize = 128 * 1_024; // 128 KiB
+const MAX_DEFAULT_WINDOW_SIZE: usize = APPROX_DEFAULT_STACK_LIMIT_IN_BYTES / I32_SIZE_BYTES;
 
 /// A struct that maintains a rolling window of i32 values and provides statistical calculations.
 ///
@@ -65,26 +69,76 @@ pub struct RollingStats<const WINDOW_SIZE: usize> {
 }
 
 impl<const WINDOW_SIZE: usize> RollingStats<WINDOW_SIZE> {
-    /// Creates a new `RollingStats` instance with the specified endianness and random number generator seed.
+    /// Attempts to create a new `RollingStats` instance with the specified endianness and random number generator seed.
     ///
     /// # Arguments
     ///
     /// * `endianness`: The byte order to use when reading i32 values from byte slices.
     /// * `seed`: A seed value for the internal random number generator.
     ///
+    /// # Returns
+    ///
+    /// * `Ok(Self)` if the `WINDOW_SIZE` is within the default library-defined stack limit.
+    /// * `Err(&'static str)` if the `WINDOW_SIZE` exceeds the default stack limit, containing an error message.
+    ///
     /// # Examples
     ///
     /// ```
-    /// use rolling_stats::{RollingStats, Endian};
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
     ///
-    /// let stats = RollingStats::<32>::new(Endian::Little, 42);
+    /// let stats = RollingStats::<32>::try_new(Endian::Little, 42);
+    /// assert!(stats.is_ok());
     /// ```
-    pub fn new(endianness: Endian, seed: u64) -> Self {
-        Self {
-            endianness,
-            window: ArrayDeque::new(),
-            buffer: ArrayVec::new(),
-            rng: ChaCha8Rng::seed_from_u64(seed),
+    pub fn try_new(endianness: Endian, seed: u64) -> Result<Self, &'static str> {
+        if WINDOW_SIZE > MAX_DEFAULT_WINDOW_SIZE {
+            Err(formatcp!("You exceeded the default window size. It would exceed the default library-defined stack limit of {} KiB.", APPROX_DEFAULT_STACK_LIMIT_IN_BYTES / 1024))
+        } else {
+            Ok(Self {
+                endianness,
+                window: ArrayDeque::new(),
+                buffer: ArrayVec::new(),
+                rng: ChaCha8Rng::seed_from_u64(seed),
+            })
+        }
+    }
+
+    /// Attempts to create a new `RollingStats` instance with the specified endianness, random number generator seed,
+    /// and a custom stack limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `endianness`: The byte order to use when reading i32 values from byte slices.
+    /// * `seed`: A seed value for the internal random number generator.
+    /// * `stack_limit_in_bytes`: The custom stack limit in bytes to use for determining the maximum window size.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Self)` if the `WINDOW_SIZE` is within the specified custom stack limit.
+    /// * `Err(&'static str)` if the `WINDOW_SIZE` exceeds the custom stack limit, containing an error message.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
+    ///
+    /// const CUSTOM_STACK_LIMIT: usize = 1024 * 1024; // 1 MiB
+    /// let stats = RollingStats::<1000>::try_new_with_stack_limit::<CUSTOM_STACK_LIMIT>(Endian::Little, 42);
+    /// assert!(stats.is_ok());
+    /// ```
+    pub fn try_new_with_stack_limit<const CUSTOM_STACK_LIMIT: usize>(endianness: Endian, seed: u64) -> Result<Self, &'static str> {
+        let max_custom_window_size = CUSTOM_STACK_LIMIT / I32_SIZE_BYTES;
+
+        if WINDOW_SIZE > max_custom_window_size {
+            Err("You exceeded the maximum window size with respect to your custom stack limit.")
+        } else {
+            Ok(Self {
+                endianness,
+                window: ArrayDeque::new(),
+                buffer: ArrayVec::new(),
+                rng: ChaCha8Rng::seed_from_u64(seed),
+            })
         }
     }
 
@@ -97,9 +151,10 @@ impl<const WINDOW_SIZE: usize> RollingStats<WINDOW_SIZE> {
     /// # Examples
     ///
     /// ```
-    /// use rolling_stats::{RollingStats, Endian};
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
     ///
-    /// let mut stats = RollingStats::<3>::new(Endian::Little, 42);
+    /// let mut stats = RollingStats::<3>::try_new(Endian::Little, 42).unwrap();
     /// stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
     ///
     /// assert_eq!(stats.mean(), 2.0);
@@ -124,9 +179,10 @@ impl<const WINDOW_SIZE: usize> RollingStats<WINDOW_SIZE> {
     /// # Examples
     ///
     /// ```
-    /// use rolling_stats::{RollingStats, Endian};
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
     ///
-    /// let mut stats = RollingStats::<3>::new(Endian::Little, 42);
+    /// let mut stats = RollingStats::<3>::try_new(Endian::Little, 42).unwrap();
     /// stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
     ///
     /// assert!((stats.std_dev() - 0.81649658092773).abs() < 1e-6);
@@ -161,9 +217,10 @@ impl<const WINDOW_SIZE: usize> RollingStats<WINDOW_SIZE> {
     /// # Examples
     ///
     /// ```
-    /// use rolling_stats::{RollingStats, Endian};
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
     ///
-    /// let mut stats = RollingStats::<3>::new(Endian::Little, 42);
+    /// let mut stats = RollingStats::<3>::try_new(Endian::Little, 42).unwrap();
     /// stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
     ///
     /// let sample = stats.sample_value();
@@ -208,9 +265,10 @@ impl<const WINDOW_SIZE: usize> RollingStats<WINDOW_SIZE> {
     /// # Examples
     ///
     /// ```
-    /// use rolling_stats::{RollingStats, Endian};
+    /// use rolling_stats::RollingStats;
+    /// use endi::Endian;
     ///
-    /// let mut stats = RollingStats::<3>::new(Endian::Little, 42);
+    /// let mut stats = RollingStats::<3>::try_new(Endian::Little, 42).unwrap();
     /// stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
     ///
     /// assert_eq!(stats.mean(), 2.0);
@@ -254,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_initialization() {
-        let stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         assert_eq!(stats.window.len(), 0);
         assert_eq!(stats.buffer.len(), 0);
         assert!(matches!(stats.endianness, Endian::Big));
@@ -262,14 +320,14 @@ mod tests {
 
     #[test]
     fn test_empty_state() {
-        let stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         assert!(stats.mean().is_nan());
         assert!(stats.std_dev().is_nan());
     }
 
     #[test]
     fn test_push_complete_numbers() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         assert_eq!(stats.window.len(), 3);
         assert_eq!(
@@ -280,15 +338,15 @@ mod tests {
 
     #[test]
     fn test_mean_calculation() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         assert_eq!(stats.mean(), 2.0);
     }
 
     #[test]
     fn test_mean_calculation_with_less_numbers() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
-        let mut stats_long = RollingStats::<10>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
+        let mut stats_long = RollingStats::<10>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         stats_long.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         assert_eq!(stats.mean(), stats_long.mean());
@@ -296,15 +354,15 @@ mod tests {
 
     #[test]
     fn test_std_dev_calculation() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         assert!((stats.std_dev() - 0.81649658092773).abs() < 1e-6);
     }
 
     #[test]
     fn test_std_dev_calculation_with_less_numbers() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
-        let mut stats_long = RollingStats::<10>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
+        let mut stats_long = RollingStats::<10>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         stats_long.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
         assert!((stats.std_dev() - stats_long.std_dev()).abs() < 1e-6);
@@ -312,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_window_rolling() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4]);
         assert_eq!(
             stats.window.iter().cloned().collect::<ArrayVec<i32, 3>>(),
@@ -323,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_incomplete_number_handling() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0]);
         assert_eq!(stats.window.len(), 1);
         assert_eq!(stats.buffer.len(), 2);
@@ -337,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_little_endian_handling() {
-        let mut stats = RollingStats::<3>::new(Endian::Little, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Little, SEED).unwrap();
         stats.push_bytes_to_window(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
         assert_eq!(
             stats.window.iter().cloned().collect::<ArrayVec<i32, 3>>(),
@@ -346,8 +404,21 @@ mod tests {
     }
 
     #[test]
+    fn test_huge_window_size() {
+        let stats = RollingStats::<{ u16::MAX as usize }>::try_new(Endian::Big, SEED);
+        assert!(stats.is_err());
+    }
+
+    #[test]
+    fn test_initialization_with_increased_stack_limit() {
+        const CUSTOM_STACK_LIMIT: usize = 512 * 1024; // 512 KiB
+        let stats = RollingStats::<{ u16::MAX as usize }>::try_new_with_stack_limit::<CUSTOM_STACK_LIMIT>(Endian::Big, SEED);
+        assert!(stats.is_ok());
+    }
+
+    #[test]
     fn test_sample_values() {
-        let mut stats = RollingStats::<3>::new(Endian::Big, SEED);
+        let mut stats = RollingStats::<3>::try_new(Endian::Big, SEED).unwrap();
         stats.push_bytes_to_window(&[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3]);
 
         let mut sample_values = ArrayVec::<f64, 32>::new();
